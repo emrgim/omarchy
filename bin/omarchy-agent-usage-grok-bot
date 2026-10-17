@@ -1,0 +1,163 @@
+#!/usr/bin/python3
+# omarchy:summary=Print the Grok Bot usage record as JSON
+# omarchy:args=[--force] [--limits-only]
+# omarchy:hidden=true
+"""Collect Grok Bot usage into one display-ready JSON record.
+
+The Grok Bot desktop app keeps its last weekly-usage reading in its own
+persistence store, one file per key named after the base32 of the key. The
+reading under the key ending in ".weekly-usage.cache" is the plan and the
+weekly allowance the app itself shows. Nothing here signs in or calls out:
+the record is only ever what the app has already cached, so it is as fresh
+as the app's last check. Grok Bot keeps no per-day or per-model token counts
+on disk, so those sections stay empty.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import binascii
+import json
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+AGENT_ID = "grok-bot"
+AGENT_NAME = "Grok Bot"
+AUTH_HELP = "Open the Grok Bot app and sign in; it caches your weekly usage locally."
+CACHE_SUFFIX = ".weekly-usage.cache"
+
+
+def default_store() -> Path:
+  config_home = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+  return config_home / "Grok Bot" / "sand-client-persistence"
+
+
+def now_ms() -> int:
+  return round(datetime.now(timezone.utc).timestamp() * 1000)
+
+
+def iso(epoch_millis: Any) -> str:
+  try:
+    millis = int(epoch_millis or 0)
+  except (TypeError, ValueError):
+    return ""
+  if millis <= 0:
+    return ""
+  return datetime.fromtimestamp(millis / 1000, timezone.utc).isoformat()
+
+
+def base_record(**overrides: Any) -> dict[str, Any]:
+  record: dict[str, Any] = {
+    "schemaVersion": 1,
+    "id": AGENT_ID,
+    "name": AGENT_NAME,
+    "updatedAt": datetime.now(timezone.utc).isoformat(),
+    "ready": False,
+    # The allowance belongs to the account, not this machine.
+    "scope": "account",
+    "hasPromptStats": False,
+    "tierLabel": "",
+    "usageStatusText": "",
+    "authHelpText": AUTH_HELP,
+    "limits": [],
+    "limitsStale": False,
+    "limitsFetchedAt": 0,
+    "hasLocalStats": False,
+    "todayPrompts": 0,
+    "todaySessions": 0,
+    "todayTotalTokens": 0,
+    "todayTokensByModel": {},
+    "recentDays": [],
+    "totalPrompts": 0,
+    "totalSessions": 0,
+    "activeDays": 0,
+    "activeDates": [],
+    "modelUsage": {},
+  }
+  record.update(overrides)
+  return record
+
+
+def store_key(name: str) -> str:
+  stem = name[: -len(".blob")]
+  try:
+    return base64.b32decode(stem.upper() + "=" * (-len(stem) % 8)).decode("utf-8")
+  except (binascii.Error, ValueError, UnicodeDecodeError):
+    return ""
+
+
+def cached_reading(store: Path) -> dict[str, Any] | None:
+  """The app's cached weekly-usage entry, or None when it has none yet."""
+  try:
+    names = sorted(entry.name for entry in store.iterdir() if entry.name.endswith(".blob"))
+  except OSError:
+    return None
+  for name in names:
+    if not store_key(name).endswith(CACHE_SUFFIX):
+      continue
+    try:
+      data = json.loads((store / name).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+      continue
+    value = data.get("value") if isinstance(data, dict) else None
+    if isinstance(value, dict) and isinstance(value.get("reading"), dict):
+      return value
+  return None
+
+
+def scan(store: Path) -> dict[str, Any]:
+  cached = cached_reading(store)
+  if cached is None:
+    return base_record(usageStatusText="Grok Bot has not cached usage yet")
+
+  reading = cached["reading"]
+  usage = reading.get("usage") if isinstance(reading.get("usage"), dict) else {}
+  try:
+    percent = float(usage["percentUsed"])
+  except (KeyError, TypeError, ValueError):
+    percent = None
+
+  limits = []
+  if percent is not None:
+    limit: dict[str, Any] = {"label": "Weekly", "percent": max(0.0, min(1.0, percent / 100))}
+    resets_at = iso(usage.get("nextResetMs"))
+    if resets_at:
+      limit["resetsAt"] = resets_at
+    limits.append(limit)
+
+  try:
+    expires = int(cached.get("expiresAtMs") or 0)
+    fetched = int(reading.get("readAtMs") or 0)
+  except (TypeError, ValueError):
+    expires, fetched = 0, 0
+
+  return base_record(
+    ready=percent is not None,
+    tierLabel=str(usage.get("grokPlanLabel") or ""),
+    usageStatusText="" if percent is not None else "No usage in the Grok Bot cache",
+    limits=limits,
+    # Past the app's own expiry the reading is kept but shown with its age.
+    limitsStale=expires > 0 and now_ms() > expires,
+    limitsFetchedAt=max(0, fetched),
+  )
+
+
+def main() -> int:
+  parser = argparse.ArgumentParser(description="Print the Grok Bot usage record as JSON")
+  # Nothing is fetched, so neither flag changes anything; they exist so every
+  # collector accepts the same invocation.
+  parser.add_argument("--force", action="store_true")
+  parser.add_argument("--limits-only", action="store_true")
+  parser.add_argument("--store", default=os.environ.get("GROK_BOT_STORE", ""))
+  args = parser.parse_args()
+
+  store = Path(args.store).expanduser() if args.store else default_store()
+  print(json.dumps(scan(store), separators=(",", ":")))
+  return 0
+
+
+if __name__ == "__main__":
+  raise SystemExit(main())
