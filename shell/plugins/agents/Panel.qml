@@ -545,8 +545,9 @@ Panel {
   }
 
   // Per-product breakdown a collector may report under a limit. A sub-row
-  // shares its parent's reset; it only gets a countdown and φ of its own
-  // when the collector gives it its own reset and window.
+  // runs on its own reset, or its parent's when it names none, so its usage
+  // empties when that passes; it only shows a countdown and φ of its own
+  // when the collector gives it both its own reset and its own window.
   function subLimitWindows(entry) {
     var list = entry && Array.isArray(entry.subLimits) ? entry.subLimits : []
     var out = []
@@ -554,9 +555,12 @@ Panel {
       var sub = list[i] || {}
       var percent = Number(sub.percent)
       if (!(percent >= 0)) percent = 0
-      var ownWindow = String(sub.resetsAt || "") !== "" ? explicitSpanMs(sub) : 0
-      out.push(limitWindow(sub.label, percent, ownWindow > 0 ? sub.resetsAt : "",
-        String(sub.label || "Usage"), ownWindow, [], []))
+      var ownReset = String(sub.resetsAt || "")
+      var ownWindow = ownReset !== "" ? explicitSpanMs(sub) : 0
+      var w = limitWindow(sub.label, percent, ownReset !== "" ? ownReset : entry.resetsAt,
+        String(sub.label || "Usage"), ownWindow, [], [])
+      w.hideReset = !(ownWindow > 0)
+      out.push(w)
     }
     return out
   }
@@ -606,9 +610,11 @@ Panel {
       start.setUTCDate(Math.min(day, lastDay))
       return end.getTime() - start.getTime()
     }
-    if (text.indexOf("daily") >= 0 || text.indexOf("day ") >= 0 || text.indexOf("24h") >= 0) return 24 * 3600 * 1000
-    if (text.indexOf("session") >= 0 && windowSpanMs(e.label) === 0) return 5 * 3600 * 1000
-    return windowSpanMs(e.label)
+    if (/\bweek|\b(?:7|seven)\s*-?\s*days?\b/.test(text)) return 7 * 24 * 3600 * 1000
+    if (/\bdaily\b|\b(?:1|one)\s*-?\s*day\b|\b24\s*-?\s*h(?:ours?)?\b/.test(text)) return 24 * 3600 * 1000
+    var fromLabel = windowSpanMs(e.label)
+    if (fromLabel > 0) return fromLabel
+    return text.indexOf("session") >= 0 ? 5 * 3600 * 1000 : 0
   }
 
   // Burn-rate coefficient φ: the share of the allowance used by reset if the
@@ -2099,6 +2105,8 @@ Panel {
         titleWidth: block.width * 0.3 - block.indent
         fontSize: Style.font.caption
         window: modelData
+        stale: block.stale
+        fetchedAt: block.fetchedAt
       }
     }
 
@@ -2129,7 +2137,7 @@ Panel {
     property real fetchedAt: 0
     readonly property var scoped: window && window.scoped ? window.scoped : []
     readonly property bool alarming: window && window.percent >= 0.9
-    readonly property real resetMs: root.resetMsFor(window)
+    readonly property real resetMs: window && window.hideReset ? -1 : root.resetMsFor(window)
     implicitHeight: Math.max(compactTitle.implicitHeight, compactValue.implicitHeight)
 
     HoverHandler { id: compactHover }

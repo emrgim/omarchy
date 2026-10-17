@@ -62,8 +62,8 @@ printf '{"accessToken":"test-token"}\n' >"$XDG_CONFIG_HOME/cursor/auth.json"
 record=$(collect)
 [[ $(jq -c '{ready, tierLabel, labels: [.limits[].label], percents: [.limits[].percent]}' <<<"$record") == '{"ready":true,"tierLabel":"Pro","labels":["Included total","Auto models","Named models","On-demand $12.50 / $50.00"],"percents":[0.3,0.2,0.5,0.25]}' ]] ||
   fail "the CLI sign-in reads Cursor's own meters" "$record"
-[[ $(jq -r '.limits[0].windowSeconds' <<<"$record") == $((30 * 86400)) ]] ||
-  fail "the billing cycle's length rides along for the pace" "$record"
+[[ $(jq -c '[.limits[].windowSeconds]' <<<"$record") == "[$((30 * 86400)),$((30 * 86400)),$((30 * 86400)),$((30 * 86400))]" ]] ||
+  fail "every row, on-demand included, carries the billing cycle's length for the pace" "$record"
 [[ $(jq -c '.limits[0].details' <<<"$record") == '[{"label":"Spend","value":"$12.34 (included $10.00 + bonus $2.34)"},{"label":"Included allowance","value":"$20.00"}]' ]] ||
   fail "the plan's dollar figures are detail lines" "$record"
 [[ $(jq -r '.todayTotalTokens' <<<"$record") == 150 ]] || fail "today's tokens come from the aggregated events" "$record"

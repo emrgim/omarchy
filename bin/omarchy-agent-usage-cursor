@@ -366,6 +366,7 @@ def summarize_limits(period: dict[str, Any]) -> list[dict[str, Any]]:
       "label": f"On-demand ${used_cents / 100:.2f} / ${limit_cents / 100:.2f}",
       "percent": min(1.0, used_cents / limit_cents),
       "resetsAt": resets_at,
+      **window,
     })
   return limits
 
